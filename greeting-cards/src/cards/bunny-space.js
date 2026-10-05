@@ -128,12 +128,21 @@
   }
   function silverPattern(ctx, S) {
     if (!S.silverTile) {
-      S.silverTile = tile(S, 96, "#D5D8DF", [
-        ["#FFFFFF", 0.26], ["#9CA1AC", 0.12], ["#EEF0F4", 0.22], ["#B7BBC4", 0.14],
-        ["#F6E2F3", 0.08], ["#DCEDF9", 0.08], ["#868C98", 0.04], ["#FFF8DE", 0.06],
+      S.silverTile = tile(S, 96, "#CDD0D6", [
+        ["#FFFFFF", 0.24], ["#9A9EA8", 0.16], ["#ECEEF2", 0.2], ["#B4B8C1", 0.16],
+        ["#8E8A93", 0.12], ["#D9DBE0", 0.08], ["#6E727D", 0.04],
       ], 0.6);
     }
     return pattern(ctx, S, S.silverTile);
+  }
+  // loose glitter flecks (transparent between them) laid over a silver stroke so it reads grainy
+  function fleckPattern(ctx, S) {
+    if (!S.fleckTile) {
+      S.fleckTile = tile(S, 96, null, [
+        ["rgba(112,110,122,0.9)", 0.42], ["rgba(255,255,255,0.95)", 0.38], ["rgba(76,76,88,0.85)", 0.2],
+      ], 0.3);
+    }
+    return pattern(ctx, S, S.fleckTile);
   }
   function silverGradient(ctx, x0, y0, x1, y1) {
     const g = ctx.createLinearGradient(x0, y0, x1, y1);
@@ -206,10 +215,11 @@
     return out;
   }
   function drawSpeckles(ctx, layer, list) {
+    list = list.filter((_, i) => (i * 7) % 10 < 6);
     if (layer === "foil") {
       const p = new Path2D();
       list.forEach(([x, y, r]) => { p.moveTo(x + r, y); p.arc(x, y, r, 0, TAU); });
-      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillStyle = "rgba(255,255,255,0.32)";
       ctx.fill(p);
       return;
     }
@@ -219,13 +229,13 @@
       sh.moveTo(x + 0.25 + r * 1.1, y + 0.4); sh.arc(x + 0.25, y + 0.4, r * 1.1, 0, TAU);
       const b = t < 0.55 ? b1 : b2;
       b.moveTo(x + r, y); b.arc(x, y, r, 0, TAU);
-      if (r > 0.6) { const hx = x - r * 0.3, hy = y - r * 0.32, hr = r * 0.38; hi.moveTo(hx + hr, hy); hi.arc(hx, hy, hr, 0, TAU); }
+      if (r > 1.1) { const hx = x - r * 0.3, hy = y - r * 0.32, hr = r * 0.34; hi.moveTo(hx + hr, hy); hi.arc(hx, hy, hr, 0, TAU); }
     });
     ctx.fillStyle = "rgba(255,150,195,0.12)"; ctx.fill(halo);
     ctx.fillStyle = "rgba(105,0,40,0.30)"; ctx.fill(sh);
     ctx.fillStyle = "rgba(255,158,198,0.82)"; ctx.fill(b1);
     ctx.fillStyle = "rgba(255,200,224,0.85)"; ctx.fill(b2);
-    ctx.fillStyle = "rgba(255,255,255,0.95)"; ctx.fill(hi);
+    ctx.fillStyle = "rgba(255,236,244,0.7)"; ctx.fill(hi);
   }
 
   /* ---------------- silver bits ---------------- */
@@ -247,13 +257,13 @@
     ctx.fill();
     K.sparklePath(ctx, x, y, r, thin);
     const g = ctx.createRadialGradient(x - r * 0.1, y - r * 0.1, 0, x, y, r);
-    g.addColorStop(0, "#FFFFFF");
-    g.addColorStop(0.35, "#F4F6FA");
-    g.addColorStop(1, "#AEB3BD");
+    g.addColorStop(0, "#F4F5F8");
+    g.addColorStop(0.35, "#CDD0D7");
+    g.addColorStop(1, "#8F939D");
     ctx.fillStyle = g;
     ctx.fill();
     ctx.lineWidth = Math.max(0.15, r * 0.022);
-    ctx.strokeStyle = "rgba(95,95,112,0.4)";
+    ctx.strokeStyle = "rgba(80,80,96,0.5)";
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(x, y, r * 0.2, 0, TAU);
@@ -415,8 +425,10 @@
     strokeUnion(ctx, lw, d);
     // specular streaks running along the foil edge
     const g = ctx.createLinearGradient(95, 70, 215, 230);
-    for (let i = 0; i <= 12; i++) g.addColorStop(i / 12, i % 2 ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0)");
+    for (let i = 0; i <= 12; i++) g.addColorStop(i / 12, i % 2 ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0)");
     strokeUnion(ctx, lw * 0.45, g);
+    // grey and white glitter flecks: grainy silver glitter rather than a flat line
+    strokeUnion(ctx, lw, fleckPattern(ctx, S));
   }
 
   /* ---------------- flower bank ---------------- */
@@ -607,7 +619,7 @@
     paper: PINK,
     insert: "#FBF7F0",
     ink: "#2B2722",
-    foil: "holo",
+    foil: "silver",
     message: "Some bunny\nthinks you're\nout of this\nworld.",
     messageRect: { x: 0.16 * W, y: 0.14 * H, w: 0.68 * W, h: 0.52 * H },
 

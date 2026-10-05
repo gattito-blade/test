@@ -9,7 +9,11 @@
   const K = window.KEEPSAKE;
   const TAU = Math.PI * 2;
   const W = 230, H = 300;
-  const PAPER = "#F4F3F1", BACK = "#F1F0EE", INSERT = "#FBFAF7";
+  const PAPER = "#F4F3F1", BACK = "#E9E8E6", INSERT = "#FBFAF7";
+  // layered cloud banks in cool greys, palest far away, darkest at the front (value range for the card
+  // and its toolbar thumbnail, as on the original); each gets its own cotton tooth
+  const BANK_FILLS = ["#E0E0E6", "#D0D0D8", "#BFC0CA", "#AFB0BC", "#9FA0AD"];
+  const FLOAT_FILL = "#E7E7EB";
   const SH = "84,86,104"; // cool grey-violet used for every shadow (rgb triplet)
   const sh = (a) => `rgba(${SH},${a})`;
 
@@ -107,7 +111,7 @@
   const DIE_M = buildCloud(mirrorCircles(DIE_C), 21);
 
   // the crescent: outer disc minus a disc offset toward the upper left
-  const MOON = { x: 166, y: 76, r: 31, ox: -10.5, oy: -5.5, ri: 27.5 };
+  const MOON = { x: 166, y: 76, r: 34, ox: -11.5, oy: -6, ri: 30.2 };
   const MOON_IN = { x: W / 2, y: H * 0.8, r: 10, ox: -3.7, oy: -1.8, ri: 9.0 };
 
   // hand-placed silver stars: [x, y, r, kind]
@@ -508,9 +512,17 @@
     S.paper = k < 1 ? PAPER : devicePattern(ctx, k, toothTile(PAPER));
     ctx.fillStyle = S.paper;
     ctx.fillRect(0, 0, W, H);
-    // blind-embossed clouds
-    relief(ctx, k, FLOAT, { raised: true, depth: 0.9 });
-    BANKS.forEach((b, i) => relief(ctx, k, b, { raised: true, depth: 0.85 + i * 0.12, over: BANKS.slice(i + 1) }));
+    // a pale blue-grey halo of night sky behind the moon
+    const halo = ctx.createRadialGradient(MOON.x, MOON.y, MOON.r * 0.6, MOON.x, MOON.y, MOON.r * 2.6);
+    halo.addColorStop(0, "rgba(176,184,214,0.42)");
+    halo.addColorStop(0.55, "rgba(190,196,222,0.2)");
+    halo.addColorStop(1, "rgba(200,204,226,0)");
+    ctx.fillStyle = halo;
+    ctx.fillRect(0, 0, W, H);
+    // embossed clouds, each layer on its own grey stock
+    const stock = (c) => (k < 1 ? c : devicePattern(ctx, k, toothTile(c)));
+    relief(ctx, k, FLOAT, { raised: true, depth: 0.9, fill: stock(FLOAT_FILL) });
+    BANKS.forEach((b, i) => relief(ctx, k, b, { raised: true, depth: 0.85 + i * 0.12, over: BANKS.slice(i + 1), fill: stock(BANK_FILLS[i]) }));
     drawDieCut(ctx, k, S, layer);
     sheetLight(ctx, S, DIE.box[0] - 2, DIE.box[1] - 2, W, H - DIE.box[1] + 4);
     pearlSheen(ctx, 0, DIE.box[1] - 2, W, H - DIE.box[1] + 2);

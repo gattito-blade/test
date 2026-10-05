@@ -15,11 +15,12 @@
   /* ------------------------------------------------------------------ */
   const TILE = 256; // device px
   const TILE_SPECS = {
+    // resting gold sits dark and olive (bronze); the shell's moving light band lifts it to bright yellow
     gold: {
-      base: "#B18F2C",
-      blobs: ["rgba(110,80,10,0.45)", "rgba(238,211,122,0.5)", "rgba(168,132,28,0.45)", "rgba(222,190,90,0.5)"],
-      flecks: [["#7E5E10", 0.14], ["#A8841C", 0.24], ["#CFAA3C", 0.3], ["#EED37A", 0.2], ["#5C430A", 0.05], ["#F7E7AE", 0.07]],
-      density: 0.62, glints: 0.0045, glint: "#FFF9E4",
+      base: "#937A27",
+      blobs: ["rgba(92,68,8,0.45)", "rgba(206,182,96,0.45)", "rgba(146,116,26,0.45)", "rgba(190,162,74,0.45)"],
+      flecks: [["#6A5210", 0.14], ["#8E741C", 0.24], ["#AE9235", 0.3], ["#CDB466", 0.2], ["#4C3A08", 0.05], ["#E2D29A", 0.07]],
+      density: 0.62, glints: 0.0045, glint: "#FFF6DA",
     },
     teal: {
       base: "#35604F",
@@ -29,9 +30,13 @@
     },
   };
   const tiles = {};
+  function dropOtherScales(kind, key) {
+    for (const k in tiles) if (k !== key && k.startsWith(kind + "@")) delete tiles[k];
+  }
   function tile(kind, scale) {
     const key = kind + "@" + scale;
     if (tiles[key]) return tiles[key];
+    dropOtherScales(kind, key);
     const sp = TILE_SPECS[kind];
     const c = document.createElement("canvas");
     c.width = c.height = TILE;
@@ -85,6 +90,7 @@
   function paperTile(scale) {
     const key = "paper@" + scale;
     if (tiles[key]) return tiles[key];
+    dropOtherScales("paper", key);
     const S = 384, c = document.createElement("canvas");
     c.width = c.height = S;
     const g = c.getContext("2d"), r = K.rng("lily-stars:tile:paper"), u = scale; // u = device px per card unit
@@ -247,8 +253,10 @@
   }
 
   /* ------------------------------------------------------------------ */
-  /* composition (card units, 300 x 290)                                 */
+  /* composition: authored in a 300 x 290 design space; positions (not  */
+  /* shapes) are stretched to the card's real size by sx, sy             */
   /* ------------------------------------------------------------------ */
+  const DW = 300, DH = 290;
   const STRIPE_X = [23.5, 54.5, 82, 110, 136.5, 164.5, 190, 214.5, 242, 277];
   const STARS = [ // x, y, glitter radius, base rotation (deg)
     [19.5, 78, 10.5, -8],
@@ -290,8 +298,8 @@
     },
   ];
 
-  function buildLily(spec, R) {
-    const L = { name: spec.name, cx: spec.cx, cy: spec.cy };
+  function buildLily(spec, R, sx, sy) {
+    const L = { name: spec.name, cx: spec.cx * sx, cy: spec.cy * sy };
     L.tepals = spec.tepals
       .map((t, i) => {
         const T = {
@@ -355,9 +363,9 @@
 
   function stripePaths(box, o) {
     const R = o.rng("stripes");
-    const { h } = box;
+    const { h } = box, sx = box.w / DW;
     return STRIPE_X.map((x0) => {
-      const cx = x0 + R.range(-1, 1), wd = R.range(7.5, 10.5), lean = R.range(-2.2, 2.2);
+      const cx = x0 * sx + R.range(-1, 1), wd = R.range(7.5, 10.5) * sx, lean = R.range(-2.2, 2.2);
       const sw = [R.range(0.5, 1.1), R.range(45, 80), R() * TAU, R.range(0.2, 0.45), R.range(12, 22), R() * TAU];
       const eL = [R.range(0.15, 0.35), R.range(3, 6), R() * TAU, R.range(0.2, 0.4), R.range(8, 14), R() * TAU];
       const eR = [R.range(0.15, 0.35), R.range(3, 6), R() * TAU, R.range(0.2, 0.4), R.range(8, 14), R() * TAU];
@@ -423,7 +431,9 @@
     const art = o.layer === "art";
     const T = art ? o.rng("star-tex") : null;
     const border = 1.7;
-    const stars = STARS.map(([x, y, r, rotDeg]) => {
+    const sx = box.w / DW, sy = box.h / DH, sr = 1 + (Math.min(sx, sy) - 1) * 0.5;
+    const stars = STARS.map(([x0, y0, r0, rotDeg]) => {
+      const x = x0 * sx, y = y0 * sy, r = r0 * sr;
       const rot = -Math.PI / 2 + (rotDeg + R.range(-4, 4)) * D2R;
       const inner = R.range(0.56, 0.6);
       return { x, y, r, rot, inner, p: starPath(x, y, r, inner, rot, r * 0.15, r * 0.09) };
@@ -694,20 +704,22 @@
       ctx.lineWidth = g.s.pistil ? 1.3 : 0.95;
       ctx.stroke(g.fil);
     }
-    // stigma
+    // stigma: a slim club that tapers off the style, not a ball
     const pg = geo[geo.length - 1];
-    for (let k = 0; k < 3; k++) {
-      const a = pg.dir + (k - 1) * 1.1;
-      const x = pg.ex + Math.cos(a) * 1.2, y = pg.ey + Math.sin(a) * 1.2;
-      ctx.fillStyle = "#5F6E2C";
-      ctx.beginPath();
-      ctx.arc(x, y, 1.55, 0, TAU);
-      ctx.fill();
-    }
-    ctx.fillStyle = "rgba(214,226,150,0.7)";
+    ctx.save();
+    ctx.translate(pg.ex, pg.ey);
+    ctx.rotate(pg.dir);
+    ctx.fillStyle = "#5F6E2C";
     ctx.beginPath();
-    ctx.arc(pg.ex - 0.5, pg.ey - 0.6, 0.6, 0, TAU);
+    ctx.moveTo(-3.2, -0.75);
+    ctx.quadraticCurveTo(0.6, -1.25, 1.5, -0.35);
+    ctx.quadraticCurveTo(1.85, 0, 1.5, 0.35);
+    ctx.quadraticCurveTo(0.6, 1.25, -3.2, 0.75);
+    ctx.closePath();
     ctx.fill();
+    ctx.fillStyle = "rgba(214,226,150,0.6)";
+    ctx.fillRect(-1.2, -0.55, 2, 0.35);
+    ctx.restore();
     // anthers: one shadow pass, then each anther
     const allAn = new Path2D();
     for (const g of geo) {
@@ -818,7 +830,7 @@
   K.registerCard({
     id: "lily-stars",
     title: "Starry lilies",
-    size: { w: 300, h: 290 },
+    size: { w: 330, h: 295 },
     bleed: { t: 0.18, r: 0.1, b: 0.09, l: 0.1 },
     paper: "#EADFC0",
     insert: "#FBF7EF",
@@ -831,7 +843,7 @@
       if (layer === "art") paintCardStock(ctx, box, o);
       paintStripes(ctx, box, o);
       paintStars(ctx, box, o);
-      const lilies = LILIES.map((spec) => buildLily(spec, o.rng(spec.name)));
+      const lilies = LILIES.map((spec) => buildLily(spec, o.rng(spec.name), box.w / DW, box.h / DH));
       if (layer === "art") {
         // die-cut layers: soft cast shadow + tight contact shadow on the card (both lilies in one pass)
         const sil = new Path2D();

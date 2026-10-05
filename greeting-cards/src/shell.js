@@ -17,7 +17,6 @@
     return e;
   }
   const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
   // cubic-bezier timing (x(t) solved by Newton steps)
   function bezier(x1, y1, x2, y2) {
     const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
@@ -33,9 +32,12 @@
       return ((ay * t + by) * t + cy) * t;
     };
   }
-  // cover swing: lifts gently, ease-out, then a very small settle (never far enough to pass through the inside page)
-  const swingEase = bezier(0.4, 0.0, 0.18, 1);
+  // cover swing, as in the recording: the cover snaps up from the first frame (upright after ~0.1 s), eases
+  // down onto the left, then a very small settle (never far enough to pass through the inside page)
+  const swingEase = bezier(0.22, 0.75, 0.25, 1);
   const easeOpen = (t) => swingEase(t) + 0.007 * Math.sin(Math.PI * clamp((t - 0.62) / 0.38, 0, 1));
+  // closing also moves on the first frame, then lands softly
+  const closeEase = bezier(0.3, 0.35, 0.2, 1);
   // springy drop-in released from rest: smooth start, ~4% overshoot, settled by t = 1
   const SPRING_END = 1 - Math.exp(-6) * (Math.cos(6) + Math.sin(6));
   const springEase = (t) => (t >= 1 ? 1 : (1 - Math.exp(-6 * t) * (Math.cos(6 * t) + Math.sin(6 * t))) / SPRING_END);
@@ -59,15 +61,63 @@
 
   /* ================= persistence (all access guarded) ================= */
   const STORE_KEY = "keepsake-v1";
-  let store = {};
-  try {
-    const raw = window.localStorage.getItem(STORE_KEY);
-    if (raw) { const v = JSON.parse(raw); if (v && typeof v === "object") store = v; }
-  } catch (e) { store = {}; }
-  let saveTimer = 0;
+  // the most the inside page can hold legibly (narrowest insert, phone width, with a sign-off)
+  const MSG_MAX = 300, SIGN_MAX = 80, COVER_MAX = 60;
+  const FOILS = ["gold", "silver", "rose", "holo"];
+  const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+  const trimEnd = (s) => s.replace(/\s+$/, "");
+  // keep only well-formed fields (strings of sane length, a known foil); anything else is dropped
+  function cleanEdit(v) {
+    const out = {};
+    if (!isPlainObject(v)) return out;
+    if (typeof v.message === "string") out.message = trimEnd(v.message.replace(/\r/g, "")).slice(0, MSG_MAX);
+    if (typeof v.signoff === "string") out.signoff = v.signoff.slice(0, SIGN_MAX);
+    if (typeof v.coverText === "string") out.coverText = v.coverText.slice(0, COVER_MAX);
+    if (typeof v.foil === "string" && FOILS.includes(v.foil)) out.foil = v.foil;
+    return out;
+  }
+  // sanitised copy of what is stored, keyed by known card ids only (null when storage can't be read)
+  function readStore() {
+    try {
+      const raw = window.localStorage.getItem(STORE_KEY);
+      const v = raw ? JSON.parse(raw) : null;
+      const out = {};
+      if (isPlainObject(v)) {
+        K.ORDER.forEach((id) => {
+          if (!Object.prototype.hasOwnProperty.call(v, id)) return;
+          const e = cleanEdit(v[id]);
+          if (Object.keys(e).length) out[id] = e;
+        });
+      }
+      return out;
+    } catch (e) { return null; }
+  }
+  const store = readStore() || {};
+  const dirtyIds = new Set(); // cards edited in this tab since the last save
+  let saveTimer = 0, saveFailed = false;
+  const SAVE_NOTE = "Edits can't be saved in this browser, so they will be lost on reload.";
   function flushSave() {
     clearTimeout(saveTimer); saveTimer = 0;
-    try { window.localStorage.setItem(STORE_KEY, JSON.stringify(store)); } catch (e) { /* storage unavailable */ }
+    try {
+      // merge per card into what is stored now, so another tab's edits to other cards survive
+      let cur = {};
+      try {
+        const raw = window.localStorage.getItem(STORE_KEY);
+        const v = raw ? JSON.parse(raw) : null;
+        if (isPlainObject(v)) cur = v;
+      } catch (e) { /* unreadable or corrupt: start over */ }
+      dirtyIds.forEach((id) => {
+        if (store[id] && Object.keys(store[id]).length) cur[id] = store[id];
+        else delete cur[id];
+      });
+      window.localStorage.setItem(STORE_KEY, JSON.stringify(cur));
+      dirtyIds.clear();
+      return true;
+    } catch (e) {
+      // storage unavailable (private mode, quota, sandbox): edits stay for this visit; say so once
+      if (!saveFailed) { saveFailed = true; if (popStatus) popStatus.textContent = SAVE_NOTE; }
+      return false;
+    }
   }
   function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(flushSave, 300); }
   window.addEventListener("pagehide", () => { if (saveTimer) flushSave(); });
@@ -84,12 +134,13 @@
   };
 
   /* ================= foil looks ================= */
-  const FOILS = ["gold", "silver", "rose", "holo"];
+  // peak = alpha of the band's core. Gold keeps a saturated warm core at a lower peak, so a passing band
+  // lifts dark bronze glitter to bright yellow gold instead of washing it out to cream.
   const FOIL = {
-    gold: { tint: "255,214,140", core: "255,240,200", glint: [255, 240, 200], base: 0.07 },
-    silver: { tint: "222,232,255", core: "255,255,255", glint: [238, 245, 255], base: 0.09 },
-    rose: { tint: "255,204,218", core: "255,242,246", glint: [255, 234, 241], base: 0.07 },
-    holo: { tint: "232,224,255", core: "255,255,255", glint: [255, 255, 255], base: 0.05, holo: true },
+    gold: { tint: "255,196,80", core: "255,214,110", glint: [255, 228, 160], base: 0.06, peak: 0.6 },
+    silver: { tint: "222,232,255", core: "255,255,255", glint: [238, 245, 255], base: 0.09, peak: 0.82 },
+    rose: { tint: "255,204,218", core: "255,242,246", glint: [255, 234, 241], base: 0.07, peak: 0.82 },
+    holo: { tint: "232,224,255", core: "255,255,255", glint: [255, 255, 255], base: 0.05, peak: 0.82, holo: true },
   };
   const D = [Math.sin((115 * Math.PI) / 180), -Math.cos((115 * Math.PI) / 180)]; // 115deg gradient direction
   const glintSprites = {};
@@ -119,7 +170,7 @@
   const writer = $("writer"), live = $("live");
   const fMessage = $("f-message"), fSignoff = $("f-signoff"), fCover = $("f-cover"), fCoverWrap = $("f-cover-wrap");
   const fFoil = $("f-foil"), fCopy = $("f-copy"), fReset = $("f-reset"), popStatus = $("pop-status");
-  const popActions = $("pop-actions"), popConfirm = $("pop-confirm");
+  const popActions = $("pop-actions"), popConfirm = $("pop-confirm"), toolbar = $("toolbar");
 
   let CE_VALUE = "plaintext-only";
   try { const t = document.createElement("div"); t.contentEditable = "plaintext-only"; if (t.contentEditable !== "plaintext-only") CE_VALUE = "true"; }
@@ -129,7 +180,7 @@
     const g = K.faceGeom(card, "front");
     const st = {
       card, i, g,
-      edit: store[card.id] && typeof store[card.id] === "object" ? store[card.id] : {},
+      edit: store[card.id] || {},
       closed: { x0: -g.pad.l, x1: g.w + g.pad.r, y0: -g.pad.t, y1: g.h + g.pad.b },
       opened: { x0: -g.w - g.pad.r, x1: g.w, y0: -g.pad.t, y1: g.h + g.pad.b },
       u: 1, sOpen: 1, scale: 0,
@@ -144,8 +195,13 @@
   const getMessage = (st) => (st.edit.message != null ? st.edit.message : st.card.message);
   const getSignoff = (st) => (st.edit.signoff != null ? st.edit.signoff : "");
   const getCover = (st) => (st.edit.coverText != null ? st.edit.coverText : st.card.coverText);
-  const getFoil = (st) => { const f = st.edit.foil || st.card.foil; return FOIL[f] ? f : "gold"; };
-  function touchEdit(st) { store[st.card.id] = st.edit; saveSoon(); }
+  // whitelist lookup: a stored name such as "constructor" must never reach the FOIL table
+  const getFoil = (st) => { const f = st.edit.foil || st.card.foil; return FOILS.includes(f) ? f : "gold"; };
+  function touchEdit(st) { store[st.card.id] = st.edit; dirtyIds.add(st.card.id); saveSoon(); }
+  function coverLabel(st) {
+    const t = st.card.coverText != null ? String(getCover(st) || "").replace(/\s+/g, " ").trim() : "";
+    return `${st.card.title} card` + (t ? `, cover reads "${t}"` : "");
+  }
 
   /* ================= DOM per card ================= */
   function makeFace(parent, cls) {
@@ -191,17 +247,21 @@
     const spine = el("div", "spine-shade", inside);
     const lid = el("div", "lid-shade", inside);
     const msg = el("div", "msg", inside);
+    // hidden from assistive tech until the card is open and the message can be edited (see setSettled)
+    msg.setAttribute("aria-hidden", "true");
     const msgText = el("div", "msg-text", msg);
-    msgText.setAttribute("role", "textbox");
-    msgText.setAttribute("aria-multiline", "true");
     msgText.setAttribute("aria-label", "Message inside the card");
     msgText.setAttribute("spellcheck", "false");
     msgText.dataset.placeholder = "Write something…";
     const msgSign = el("div", "msg-sign", msg);
-    const hint = el("div", "msg-hint", msg);
+    // the hint lives outside .msg, which clips its contents to the insert
+    const hint = el("div", "msg-hint", inside);
     hint.textContent = "Click to write";
     hint.setAttribute("aria-hidden", "true");
     const cover = el("div", "cover", cardEl);
+    // the card art as an image with a text alternative (kept separate from the editable message)
+    cover.setAttribute("role", "img");
+    cover.setAttribute("aria-label", coverLabel(st));
     const front = makeFace(cover, "face front");
     const back = makeFace(cover, "face back");
     st.faces = { front, back, inside: fi };
@@ -209,23 +269,90 @@
     msgText.textContent = getMessage(st);
     msgSign.textContent = getSignoff(st);
 
-    msgText.addEventListener("input", () => {
+    const capHit = () => {
+      const note = "That's as much as fits on this card.";
+      popStatus.textContent = note;
+      if (writer.hidden) announce(note);
+    };
+    const syncMessage = () => {
       let t = msgText.innerText.replace(/\r/g, "");
-      if (t.endsWith("\n") && !getMessage(st).endsWith("\n")) t = t.replace(/\n$/, "");
+      if (t.length > MSG_MAX) {
+        // a path that slipped past beforeinput (IME, drag and drop): cut back and keep the caret at the end
+        t = t.slice(0, MSG_MAX);
+        msgText.textContent = t;
+        try { const r = document.createRange(); r.selectNodeContents(msgText); r.collapse(false); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } catch (e) { /* ignore */ }
+        capHit();
+      }
+      // an emptied editor keeps a stray <br>; clear it so the placeholder shows
+      if (!t.trim() && msgText.firstChild) msgText.textContent = "";
+      // trailing newlines (Chrome's caret placeholder included) are never stored; the DOM is left alone
+      // while typing, so the caret stays on the new line
+      t = trimEnd(t);
       st.edit.message = t; touchEdit(st);
       if (!writer.hidden && st === S[active]) fMessage.value = t;
       st.needFit = true;
+    };
+    msgText.addEventListener("input", syncMessage);
+    // contenteditable="true" fallback (no plaintext-only): text goes in as plain text nodes, so the DOM never
+    // grows <div>/<br>/<b> and what is shown, what innerText reads and what is stored always agree.
+    // (execCommand("insertText") is not used for newlines: Chrome turns "\n" into a paragraph split.)
+    const insertPlain = (text) => {
+      const sel = getSelection();
+      if (!sel || !sel.rangeCount || !msgText.contains(sel.anchorNode)) return;
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      const tn = document.createTextNode(text);
+      r.insertNode(tn);
+      // a newline at the very end only shows (and takes the caret) with one more after it
+      const rest = document.createRange();
+      rest.setStartAfter(tn); rest.setEnd(msgText, msgText.childNodes.length);
+      if (/\n$/.test(text) && !rest.toString().length) msgText.appendChild(document.createTextNode("\n"));
+      r.setStartAfter(tn); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+      syncMessage();
+    };
+    msgText.addEventListener("beforeinput", (e) => {
+      const it = e.inputType || "";
+      if (CE_VALUE === "true") {
+        if (it.startsWith("format") || it === "insertFromDrop") { e.preventDefault(); return; }
+        if (it === "insertParagraph" || it === "insertLineBreak") {
+          e.preventDefault();
+          if (msgText.innerText.replace(/\n$/, "").length < MSG_MAX) insertPlain("\n");
+          else capHit();
+          return;
+        }
+      }
+      if (!it.startsWith("insert")) return;
+      let add = e.data;
+      if (add == null && e.dataTransfer) { try { add = e.dataTransfer.getData("text/plain"); } catch (er) { add = ""; } }
+      if (add == null) add = it === "insertParagraph" || it === "insertLineBreak" ? "\n" : "";
+      const sel = getSelection();
+      const selLen = sel && sel.rangeCount && msgText.contains(sel.anchorNode) ? sel.toString().length : 0;
+      const room = MSG_MAX - (msgText.innerText.replace(/\n$/, "").length - selLen);
+      if (add.length <= room) return;
+      e.preventDefault();
+      if (room > 0 && it === "insertFromPaste") document.execCommand("insertText", false, add.slice(0, room));
+      capHit();
     });
-    msgText.addEventListener("focus", () => { pauseShow(true); });
+    msgText.addEventListener("blur", () => { if (!msgText.innerText.trim() && msgText.firstChild) msgText.textContent = ""; });
+    msgText.addEventListener("focus", () => { pauseShow(); });
     msgText.addEventListener("click", (e) => e.stopPropagation());
     msgText.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); msgText.blur(); }
+      if (e.key === "Escape") {
+        // hand focus to the Open/Close button rather than dropping it on the page body
+        e.preventDefault(); e.stopPropagation();
+        try { btnOpen.focus({ preventScroll: true }); } catch (er) { btnOpen.focus(); }
+      }
     });
     if (CE_VALUE === "true") {
       msgText.addEventListener("paste", (e) => {
         e.preventDefault();
-        const t = (e.clipboardData && e.clipboardData.getData("text/plain")) || "";
-        document.execCommand("insertText", false, t);
+        let t = ((e.clipboardData && e.clipboardData.getData("text/plain")) || "").replace(/\r/g, "");
+        const sel = getSelection();
+        const selLen = sel && sel.rangeCount && msgText.contains(sel.anchorNode) ? sel.toString().length : 0;
+        const room = MSG_MAX - (msgText.innerText.replace(/\n$/, "").length - selLen);
+        if (t.length > room) { t = t.slice(0, Math.max(0, room)); capHit(); }
+        if (t) insertPlain(t);
       });
     }
   });
@@ -287,7 +414,28 @@
   /* ================= layout ================= */
   let vw = 0, vh = 0, dpr = 1, cx = 0, cy = 0, availW = 0, availH = 0, topPad = 64;
   // while the writing panel is open the card moves up (and shrinks a little) so the message stays in view
-  const room = { r: { x: 0, v: 0 }, top: 0 };
+  // docked: on short landscape screens the writing panel sits at the right and the card moves left of it
+  const room = { r: { x: 0, v: 0 }, top: 0, left: 0, docked: false, inL: 0 };
+  // render scale (device px per card unit). Cards are capped at 2.5 to bound canvas memory; the card on
+  // show may go to 3.5 on hi-DPI screens so large retina displays don't get soft art.
+  function wantScale(st) {
+    // (only where the card is drawn large, so phones keep their memory budget)
+    const big = st.u * (st.closed.x1 - st.closed.x0) > 450;
+    const cap = st === S[active] && dpr >= 2 && big ? 3.5 : 2.5;
+    return clamp(st.u * dpr * Math.max(1, st.sOpen), 1, cap);
+  }
+  // adopt a new scale only when it is clearly larger: shrinking keeps the sharper backing store we
+  // already have (no re-render on rotation or a smaller window)
+  function growScale(st) {
+    const s = wantScale(st);
+    if (!st.scale) { st.scale = s; return false; }
+    if (s > st.scale * 1.15) {
+      st.scale = s;
+      for (const k in st.faces) st.faces[k].dirty = true;
+      return true;
+    }
+    return false;
+  }
   function layout() {
     vw = window.innerWidth || document.documentElement.clientWidth || 800;
     vh = window.innerHeight || document.documentElement.clientHeight || 600;
@@ -297,28 +445,24 @@
     const botPad = narrow ? 84 : 96, side = 16;
     availW = Math.max(120, vw - side * 2);
     availH = Math.max(120, vh - topPad - botPad);
-    cx = vw / 2; cy = topPad + availH / 2;
+    // the recording sits the card a little above the middle of the free band
+    cx = vw / 2; cy = topPad + availH / 2 - (narrow ? 0 : Math.min(22, availH * 0.04));
     let rerender = false;
-    // closed size: the whole silhouette (die-cut overhang included) fills about 57% of the viewport height,
+    // closed size: the whole silhouette (die-cut overhang included) fills about 64% of the viewport height,
     // as in the recording, so every card reads at a similar size whatever its shape or bleed
-    const capH = Math.min(availH * 0.84, vh * 0.57);
+    const capH = Math.min(availH * 0.9, vh * 0.64);
     S.forEach((st) => {
       const cw = st.closed.x1 - st.closed.x0, ch = st.closed.y1 - st.closed.y0;
       const u = Math.min((availW * 0.92) / cw, capH / ch, 1.9);
       st.u = u;
       const ow = st.opened.x1 - st.opened.x0, oh = st.opened.y1 - st.opened.y0;
-      // opened, the card comes a touch closer (the message is easier to read) when there is room
-      st.sOpen = Math.min(1.08, (availW * 0.95) / (ow * u), (availH * 0.92) / (oh * u));
+      // opened, the card keeps its scale (as in the recording) unless the spread needs to shrink to fit
+      st.sOpen = Math.min(1, (availW * 0.95) / (ow * u), (availH * 0.92) / (oh * u));
       st.dom.slot.style.setProperty("--u", u.toFixed(4));
-      // camera distance grows with the card so the hinge swing never looks fish-eyed
-      st.dom.slot.style.perspective = Math.round(clamp(st.g.w * u * 4.8, 1500, 3200)) + "px";
-      const s = clamp(u * dpr * Math.max(1, st.sOpen), 1, 2.5);
-      if (!st.scale) st.scale = s;
-      else if (Math.abs(s / st.scale - 1) > 0.15) {
-        st.scale = s;
-        for (const k in st.faces) st.faces[k].dirty = true;
-        rerender = true;
-      }
+      // camera at ~2.8 card widths: the hinge swing looms toward the viewer as in the recording
+      // (pointer-tilt angles are scaled down to match, see frame())
+      st.dom.slot.style.perspective = Math.round(clamp(st.g.w * u * 2.8, 900, 1800)) + "px";
+      if (growScale(st)) rerender = true;
       st.needFit = true;
     });
     return rerender;
@@ -509,8 +653,11 @@
   /* ================= tilt & pointer ================= */
   const tilt = {
     ry: { x: 0, v: 0 }, rx: { x: 0, v: 0 }, lift: { x: 0, v: 0 },
-    nx: 0, ny: 0, mode: "none", lastMove: -10, idle: 1,
+    nx: 0, ny: 0, mode: "none", lastMove: -10, idle: 1, fl: 1,
   };
+  // pointer-tilt amplitude (deg). With the camera at ~2.8 card widths these keep the keystone measured
+  // against the recording (left/right edge ratio about 0.95-1.05 with the pointer at the screen edge).
+  const TILT_Y = 7.6, TILT_X = 5.8, FLOAT_REST = 10;
   function springStep(s, target, omega, dt) {
     const f = 1 + 2 * dt * omega, oo = omega * omega, hoo = dt * oo, hhoo = dt * hoo;
     const inv = 1 / (f + hhoo);
@@ -519,11 +666,16 @@
     s.x = nx;
   }
   let dragging = null, suppressClickUntil = 0;
+  // the idle float rests after a while without input (no per-frame sheen repaints on an idle page)
+  let lastInput = 0;
+  const poke = () => { lastInput = clock; };
+  ["pointerdown", "keydown", "wheel"].forEach((t) => window.addEventListener(t, poke, { passive: true, capture: true }));
   function setPointer(x, y) {
     tilt.nx = clamp((x - vw / 2) / (vw / 2), -1, 1);
     tilt.ny = clamp((y - vh / 2) / (vh / 2), -1, 1);
     tilt.px = x; tilt.py = y;
     tilt.lastMove = clock;
+    lastInput = clock;
   }
   window.addEventListener("pointermove", (e) => {
     if (e.pointerType === "touch") {
@@ -536,7 +688,6 @@
     tilt.mode = "mouse";
     setPointer(e.clientX, e.clientY);
   }, { passive: true });
-  document.addEventListener("pointerleave", () => { if (tilt.mode === "mouse") tilt.mode = "none"; });
   document.documentElement.addEventListener("mouseleave", () => { if (tilt.mode === "mouse") tilt.mode = "none"; });
   window.addEventListener("blur", () => { if (tilt.mode === "mouse") tilt.mode = "none"; });
   stage.addEventListener("pointerdown", (e) => {
@@ -569,7 +720,8 @@
 
   /* ================= open / close ================= */
   let active = 0, pending = null, switchSeq = 0;
-  const OPEN_DUR = 1.1, CLOSE_DUR = 0.8, FAST_CLOSE = 0.45;
+  // the recording swings the cover open in ~0.3 s and shut in ~0.25 s
+  const OPEN_DUR = 0.42, CLOSE_DUR = 0.32, FAST_CLOSE = 0.25;
 
   function setOpen(st, open, opts) {
     opts = opts || {};
@@ -578,14 +730,20 @@
     if (open) {
       pending = null;
       ensureFace(st, "inside"); ensureFace(st, "back");
+      st.needFit = true; // fitted before the swing reveals it
     }
     const from = clamp(st.q, 0, 1);
     let dur = open ? OPEN_DUR : opts.fast ? FAST_CLOSE : CLOSE_DUR;
-    dur = Math.max(0.3, dur * Math.abs(to - from));
-    st.ot = { from, mfrom: st.m, to, t0: clock, dur: reduced ? 0.2 : dur, kind: reduced ? "fade" : open ? "open" : "close", swapped: false };
+    dur = Math.max(0.12, dur * Math.abs(to - from));
+    st.ot = { from, mfrom: st.m, to, t0: clock, dur: reduced ? 0.2 : dur, kind: reduced ? "fade" : open ? "open" : "close" };
     st.openTo = to;
     if (!open) setSettled(st, false);
-    if (st === S[active]) syncOpenButton();
+    if (st === S[active]) {
+      syncOpenButton();
+      // the writing panel belongs to the open card: closing the card closes it too (unless the panel
+      // itself closed the card to show the cover while its text is edited)
+      if (!open && !opts.keepWriter && !writer.hidden) closeWriter(writer.contains(document.activeElement));
+    }
     if (opts.announce) announce(open ? "Opened" : "Closed");
   }
   function setSettled(st, on) {
@@ -593,10 +751,15 @@
     st.settled = on;
     st.dom.slot.classList.toggle("is-settled", on);
     const t = st.dom.msgText;
-    if (on) { t.setAttribute("contenteditable", CE_VALUE); t.tabIndex = 0; st.needFit = true; }
-    else {
+    if (on) {
+      t.setAttribute("contenteditable", CE_VALUE); t.tabIndex = 0; st.needFit = true;
+      t.setAttribute("role", "textbox"); t.setAttribute("aria-multiline", "true");
+      st.dom.msg.removeAttribute("aria-hidden");
+    } else {
       if (document.activeElement === t) t.blur();
       t.removeAttribute("contenteditable"); t.tabIndex = -1;
+      t.removeAttribute("role"); t.removeAttribute("aria-multiline");
+      st.dom.msg.setAttribute("aria-hidden", "true");
     }
   }
   function toggleOpen() {
@@ -619,7 +782,7 @@
       st.m = lerp(ot.mfrom, ot.to, easeInOutCubic(t));
       if (t > 0.86) setSettled(st, true);
     } else {
-      st.q = lerp(ot.from, ot.to, easeInOutCubic(t));
+      st.q = lerp(ot.from, ot.to, closeEase(t));
       st.m = lerp(ot.mfrom, ot.to, easeInOutCubic(t));
     }
     if (t >= 1) {
@@ -630,20 +793,30 @@
 
   /* ================= switching ================= */
   const REST = { ty: 0, rz: 0, rx: 0, op: 1 };
+  // the outgoing card drops away at once (ease-out), tipping and fading; mirrored for a backward switch
+  const EXIT_DUR = 0.5;
   function exitPose(dir) {
-    const k = (switchSeq * 0.618) % 1, rz = 10 + 6 * k;
-    return dir > 0 ? { ty: 0.75 * vh, rz, rx: 25, op: 0 } : { ty: -0.75 * vh, rz: -rz, rx: -25, op: 0 };
+    const k = (switchSeq * 0.618) % 1, rz = 8 + 3 * k;
+    return dir > 0 ? { ty: 0.75 * vh, rz, rx: 18, op: 0 } : { ty: -0.75 * vh, rz: -rz, rx: -18, op: 0 };
   }
+  // boot entrance: drops in from above
   function enterPose(dir) {
     return dir > 0 ? { ty: -0.8 * vh, rz: -9, rx: -10, op: 0 } : { ty: 0.8 * vh, rz: 9, rx: 10, op: 0 };
+  }
+  // switch entrance, as in the recording: the new card slides out from behind the current one toward the
+  // top edge, hovers there while the old card falls away, then swoops down in front and settles
+  const SHUF = { rise: 0.17, swap: 0.3, dur: 0.7 };
+  function shufflePeak(dir) {
+    return dir > 0 ? { ty: -0.35 * vh, rz: -7.5, rx: 0, op: 1 } : { ty: 0.35 * vh, rz: 7.5, rx: 0, op: 1 };
   }
   function showSlot(st) {
     if (!st.visible) { st.visible = true; st.dom.slot.hidden = false; st.needFit = true; }
   }
-  function startPose(st, kind, from, to, dur, delay) {
-    st.ptw = { kind, from: Object.assign({}, from), to: Object.assign({}, to), t0: clock, dur, delay: delay || 0 };
+  function startPose(st, kind, from, to, dur, delay, extra) {
+    st.ptw = Object.assign({ kind, from: Object.assign({}, from), to: Object.assign({}, to), t0: clock, dur, delay: delay || 0 }, extra || {});
     st.dom.slot.classList.toggle("is-leaving", kind === "exit" || kind === "fadeOut");
   }
+  const easeOutPow = (t, k) => 1 - Math.pow(1 - t, k);
   function evalPose(st) {
     const tw = st.ptw;
     if (!tw) return;
@@ -653,6 +826,7 @@
     if (t >= 1) {
       Object.assign(p, b);
       st.ptw = null;
+      if (tw.kind === "shuffle") st.dom.slot.style.zIndex = "3";
       if (tw.kind === "exit" || tw.kind === "fadeOut") {
         st.visible = false; st.dom.slot.hidden = true;
         st.dom.slot.classList.remove("is-leaving");
@@ -664,10 +838,24 @@
       const e = springEase(t);
       p.ty = lerp(a.ty, b.ty, e); p.rz = lerp(a.rz, b.rz, e); p.rx = lerp(a.rx, b.rx, e);
       p.op = lerp(a.op, b.op, clamp(t / 0.3, 0, 1));
+    } else if (tw.kind === "shuffle") {
+      const s = t * tw.dur, pk = tw.peak;
+      if (s < SHUF.rise) {
+        const e = easeOutPow(s / SHUF.rise, 2.4);
+        p.ty = lerp(a.ty, pk.ty, e); p.rz = lerp(a.rz, pk.rz, e); p.rx = lerp(a.rx, pk.rx, e);
+      } else if (s < SHUF.swap) {
+        Object.assign(p, pk);
+      } else {
+        // the old card has cleared: come to the front and drop to rest
+        if (st.dom.slot.style.zIndex !== "3") st.dom.slot.style.zIndex = "3";
+        const e = springEase((s - SHUF.swap) / (tw.dur - SHUF.swap));
+        p.ty = lerp(pk.ty, b.ty, e); p.rz = lerp(pk.rz, b.rz, e); p.rx = lerp(pk.rx, b.rx, e);
+      }
+      p.op = 1;
     } else if (tw.kind === "exit") {
-      const e = Math.pow(t, 1.75);
-      p.ty = lerp(a.ty, b.ty, e); p.rz = lerp(a.rz, b.rz, Math.pow(t, 1.3)); p.rx = lerp(a.rx, b.rx, Math.pow(t, 1.2));
-      p.op = lerp(a.op, b.op, Math.pow(t, 1.35));
+      const e = easeOutPow(t, 2.2);
+      p.ty = lerp(a.ty, b.ty, e); p.rz = lerp(a.rz, b.rz, easeOutPow(t, 1.6)); p.rx = lerp(a.rx, b.rx, easeOutPow(t, 1.6));
+      p.op = lerp(a.op, b.op, Math.pow(clamp(t / 0.9, 0, 1), 1.2));
     } else {
       p.ty = a.ty; p.rz = a.rz; p.rx = a.rx;
       p.op = lerp(a.op, b.op, t);
@@ -678,6 +866,7 @@
     if (!N) return;
     target = ((target % N) + N) % N;
     if (target === active) { pending = null; return; }
+    flushCover();
     closeWriter(false);
     const cur = S[active];
     if (cur.openTo === 1 || cur.q > 0.0005 || cur.ot) {
@@ -693,21 +882,37 @@
     ensureFace(inc, "front");
     if (out.visible) {
       if (reduced) startPose(out, "fadeOut", out.pose, Object.assign({}, out.pose, { op: 0 }), 0.2, 0);
-      else startPose(out, "exit", out.pose, exitPose(dir), 0.75, 0);
+      else startPose(out, "exit", out.pose, exitPose(dir), EXIT_DUR, 0);
     }
     const wasVisible = inc.visible;
     showSlot(inc);
     if (!wasVisible) { inc.q = 0; inc.m = 0; inc.ot = null; inc.openTo = 0; setSettled(inc, false); }
-    if (reduced) startPose(inc, "fadeIn", Object.assign({}, REST, { op: wasVisible ? inc.pose.op : 0 }), REST, 0.2, 0);
-    else startPose(inc, "enter", wasVisible ? inc.pose : enterPose(dir), REST, 0.95, wasVisible ? 0 : 0.14);
+    // stacking: every other visible card at 2; the incoming card starts behind them (1) when it shuffles
+    // out from behind, and comes to the front (3) once they have cleared
+    S.forEach((o) => { if (o !== inc && o.visible) o.dom.slot.style.zIndex = "2"; });
+    if (reduced) {
+      startPose(inc, "fadeIn", Object.assign({}, REST, { op: wasVisible ? inc.pose.op : 0 }), REST, 0.2, 0);
+      inc.dom.slot.style.zIndex = "3";
+    } else if (wasVisible) {
+      // a card still on its way out comes straight back from where it is
+      startPose(inc, "enter", inc.pose, REST, 0.8, 0);
+      inc.dom.slot.style.zIndex = "3";
+    } else {
+      startPose(inc, "shuffle", REST, REST, SHUF.dur, 0, { peak: shufflePeak(dir) });
+      inc.dom.slot.style.zIndex = "1";
+    }
     active = target;
-    // stacking: the incoming card above the outgoing one
-    inc.dom.slot.style.zIndex = String(2);
-    out.dom.slot.style.zIndex = String(1);
     syncToolbar();
-    announce(`Card ${target + 1} of ${N}, ${inc.card.title}`);
-    ["inside", "back"].forEach((f) => { if (inc.faces[f].dirty) enqueue(inc, f, true); });
-    if (!opts || !opts.auto) show.mark = clock;
+    // auto-advances are not announced (a slideshow would otherwise talk every few seconds)
+    if (!opts || !opts.auto) announce(`Card ${target + 1} of ${N}, ${inc.card.title}`);
+    if (growScale(inc)) {
+      // the card on show may render sharper than the others: refresh it once the switch has landed
+      // (urgent jobs are unshifted, so this queues front, inside, back: the back reuses the new front)
+      enqueue(inc, "back", true); enqueue(inc, "inside", true); enqueue(inc, "front", true);
+    } else {
+      ["inside", "back"].forEach((f) => { if (inc.faces[f].dirty) enqueue(inc, f, true); });
+    }
+    if (show.on) show.mark = clock;
   }
   // where the user is heading (a queued switch counts), so repeated arrow presses add up
   function intended() { return pending ? pending.target : active; }
@@ -721,17 +926,20 @@
   function setShow(on) {
     show.on = on;
     show.mark = clock;
+    lastInput = clock;
+    // a fixed accessible name with aria-pressed (pressed = playing); the tooltip says what a click does
     btnPlay.setAttribute("aria-pressed", on ? "true" : "false");
-    const label = on ? "Pause slideshow" : "Play slideshow";
-    btnPlay.setAttribute("aria-label", label);
-    btnPlay.title = label + " (P)";
+    btnPlay.title = on ? "Pause slideshow" : "Play slideshow";
   }
   function pauseShow() { if (show.on) setShow(false); }
-  function manual() { pauseShow(); }
+  // as in the recording, browsing by hand keeps the slideshow running: it just restarts its timer.
+  // Only the Play/Pause button, writing (panel or inline message) and keyboard focus in the toolbar pause it.
+  function manual() { if (show.on) show.mark = clock; }
   function stepShow() {
     if (!show.on) return;
     const st = S[active];
-    if (pending || anyAnimating()) { show.mark = clock; return; }
+    if (!writer.hidden) { show.mark = clock; return; }
+    if (pending || anyAnimating()) { show.mark = clock; lastInput = clock; return; }
     const held = clock - show.mark;
     if (st.openTo === 0 && st.q === 0) {
       if (held >= 2.6) setOpen(st, true, {});
@@ -748,25 +956,45 @@
     syncOpenButton();
     if (!writer.hidden) fillWriter();
   }
+  // two-segment progress mark under the active thumbnail (as in the recording): a faint track, the first
+  // segment dark while the card is open, both dark once it has been opened and closed; reset on a switch
+  let prog = { i: -1, v: 0 };
+  function syncProgress() {
+    const st = S[active];
+    if (!st) return;
+    if (prog.i !== active) prog = { i: active, v: 0 };
+    if (st.openTo === 1) prog.v = Math.max(prog.v, 1);
+    else if (prog.v >= 1) prog.v = 2;
+    thumbs.forEach((b, i) => { const v = i === active ? String(prog.v) : "0"; if (b.dataset.prog !== v) b.dataset.prog = v; });
+  }
   function syncOpenButton() {
     const st = S[active], open = st && st.openTo === 1;
+    // fixed accessible name + aria-pressed (pressed = open); the tooltip says what a click does
     btnOpen.setAttribute("aria-pressed", open ? "true" : "false");
-    const label = open ? "Close card" : "Open card";
-    btnOpen.setAttribute("aria-label", label);
-    btnOpen.title = label + " (Space)";
+    btnOpen.title = (open ? "Close card" : "Open card") + " (Space)";
+    syncProgress();
   }
+  // polite announcements are debounced long enough that rapid switching reads only the destination
   let announceTimer = 0;
   function announce(text) {
     clearTimeout(announceTimer);
     live.textContent = "";
-    announceTimer = setTimeout(() => { live.textContent = text; }, 40);
+    announceTimer = setTimeout(() => { live.textContent = text; }, 400);
   }
+  // keyboard focus moving into the toolbar pauses the slideshow (WAI carousel pattern); pointer clicks,
+  // which don't show a focus ring, leave it running as in the recording
+  toolbar.addEventListener("focusin", (e) => {
+    let kb = false;
+    try { kb = e.target.matches(":focus-visible"); } catch (er) { kb = false; }
+    if (kb) pauseShow();
+  });
   btnOpen.addEventListener("click", () => { manual(); toggleOpen(); });
   btnPlay.addEventListener("click", () => { setShow(!show.on); });
   btnWrite.addEventListener("click", () => { if (writer.hidden) openWriter(); else closeWriter(true); });
 
   /* ================= writing panel ================= */
-  let coverTimer = 0;
+  let coverTimer = 0, coverPending = null;
+  const CAP_NOTE = "That's as much as fits on this card.";
   function fillWriter() {
     const st = S[active];
     fMessage.value = getMessage(st);
@@ -774,45 +1002,62 @@
     const hasCover = st.card.coverText != null;
     fCoverWrap.hidden = !hasCover;
     if (hasCover) fCover.value = getCover(st);
-    const foil = getFoil(st);
-    fFoil.querySelectorAll(".swatch").forEach((b) => {
-      const on = b.dataset.foil === foil;
-      b.setAttribute("aria-checked", on ? "true" : "false");
-      b.tabIndex = on ? 0 : -1;
-    });
+    fillWriterSwatches(getFoil(st));
     hideConfirm();
-    popStatus.textContent = "";
+    popStatus.textContent = saveFailed ? SAVE_NOTE : "";
   }
-  function measureWriter() { room.top = writer.hidden ? 0 : writer.offsetTop; }
+  // short landscape screens dock the panel at the right (see shell.css); the card then moves left of it
+  const mqDock = window.matchMedia ? window.matchMedia("(max-height: 520px) and (min-aspect-ratio: 1/1)") : null;
+  function measureWriter() {
+    if (writer.hidden) { room.top = 0; room.left = 0; room.docked = false; return; }
+    room.docked = !!(mqDock && mqDock.matches);
+    room.top = writer.offsetTop;
+    room.left = writer.offsetLeft;
+    // left safe-area inset (landscape notch): the brand sits at 16px + env(safe-area-inset-left)
+    const br = document.querySelector(".brand");
+    room.inL = br ? Math.max(0, br.getBoundingClientRect().left - 16) : 0;
+  }
+  // the panel grows when its textarea is resized by hand: keep the card clear of it
+  if (window.ResizeObserver) { try { new ResizeObserver(() => measureWriter()).observe(writer); } catch (e) { /* ignore */ } }
   function openWriter() {
-    manual();
+    pauseShow();
     const st = S[active];
     if (st.openTo !== 1) setOpen(st, true, { announce: true });
     fillWriter();
     writer.hidden = false;
     measureWriter();
     btnWrite.setAttribute("aria-expanded", "true");
-    btnWrite.setAttribute("aria-pressed", "true");
     try { fMessage.focus({ preventScroll: true }); } catch (e) { fMessage.focus(); }
   }
   function closeWriter(returnFocus) {
     if (writer.hidden) return;
+    flushCover();
+    // never leave keyboard focus stranded on the page body when the panel disappears under it
+    const had = writer.contains(document.activeElement);
     writer.hidden = true;
+    measureWriter();
     btnWrite.setAttribute("aria-expanded", "false");
-    btnWrite.setAttribute("aria-pressed", "false");
-    if (returnFocus) btnWrite.focus();
+    if (returnFocus || had) { try { btnWrite.focus({ preventScroll: true }); } catch (e) { btnWrite.focus(); } }
   }
   $("writer-close").addEventListener("click", () => closeWriter(true));
+  // writing pauses the slideshow, so it can never switch cards (and close the panel) mid-sentence
+  writer.addEventListener("focusin", () => pauseShow());
   document.addEventListener("pointerdown", (e) => {
     if (writer.hidden) return;
     if (writer.contains(e.target) || btnWrite.contains(e.target)) return;
     closeWriter(false);
+    // a click that only dismisses the panel must not also open/close the card underneath
+    if (stage.contains(e.target)) suppressClickUntil = Math.max(suppressClickUntil, performance.now() + 400);
   }, true);
   fMessage.addEventListener("input", () => {
     const st = S[active];
-    st.edit.message = fMessage.value; touchEdit(st);
-    st.dom.msgText.textContent = fMessage.value;
+    // stored and shown without trailing blank lines; the textarea keeps exactly what is typed
+    const t = trimEnd(fMessage.value.replace(/\r/g, "")).slice(0, MSG_MAX);
+    st.edit.message = t; touchEdit(st);
+    st.dom.msgText.textContent = t;
     st.needFit = true;
+    if (fMessage.value.length >= MSG_MAX) popStatus.textContent = CAP_NOTE;
+    else if (popStatus.textContent === CAP_NOTE) popStatus.textContent = "";
   });
   fSignoff.addEventListener("input", () => {
     const st = S[active];
@@ -820,18 +1065,32 @@
     st.dom.msgSign.textContent = fSignoff.value;
     st.needFit = true;
   });
+  // the cover text is edited with the card closed, so the change can be seen; message fields open it again
+  fCover.addEventListener("focus", () => { const st = S[active]; if (st.openTo === 1) setOpen(st, false, { keepWriter: true }); });
+  const showInside = () => { const st = S[active]; if (!writer.hidden && st.openTo !== 1) setOpen(st, true, {}); };
+  fMessage.addEventListener("focus", showInside);
+  fSignoff.addEventListener("focus", showInside);
   fCover.addEventListener("input", () => {
     const st = S[active];
-    st.edit.coverText = fCover.value; touchEdit(st);
+    st.edit.coverText = fCover.value.slice(0, COVER_MAX); touchEdit(st);
+    st.dom.cover.setAttribute("aria-label", coverLabel(st));
+    // repaint after a real pause in typing, and then only when the browser is idle
     clearTimeout(coverTimer);
-    coverTimer = setTimeout(() => rerenderCover(st), 200);
+    coverPending = st;
+    coverTimer = setTimeout(() => { coverTimer = 0; coverPending = null; rerenderCover(st); }, 450);
   });
+  function flushCover() {
+    if (!coverTimer) return;
+    clearTimeout(coverTimer); coverTimer = 0;
+    const st = coverPending; coverPending = null;
+    if (st) rerenderCover(st);
+  }
+  // Only the front shows the lettering. The back is a silhouette of the front's alpha, which text inside
+  // the card never changes, so it is left alone. The repaint runs from the idle queue (never mid-animation).
   function rerenderCover(st) {
     st.faces.front.dirty = true;
-    renderFace(st, "front");
-    // the back silhouette comes from the front; refresh it lazily
-    st.faces.back.dirty = true;
-    enqueue(st, "back", true);
+    enqueue(st, "front", true);
+    st.dom.cover.setAttribute("aria-label", coverLabel(st));
   }
   fFoil.addEventListener("click", (e) => {
     const b = e.target.closest(".swatch");
@@ -849,7 +1108,7 @@
     if (btn) btn.focus();
   });
   function setFoil(foil) {
-    if (!FOIL[foil]) return;
+    if (!FOILS.includes(foil)) return;
     const st = S[active];
     st.edit.foil = foil; touchEdit(st);
     for (const k in st.faces) st.faces[k].key = "";
@@ -862,17 +1121,34 @@
       b.tabIndex = on ? 0 : -1;
     });
   }
+  // clipboard fallback: the exact text (message + sign-off) goes into an off-screen field and is selected
+  const copyBox = el("textarea", "sr-only", writer);
+  copyBox.readOnly = true; copyBox.tabIndex = -1;
+  copyBox.setAttribute("aria-hidden", "true");
   fCopy.addEventListener("click", () => {
     const st = S[active];
-    const sign = getSignoff(st).trim();
-    const text = getMessage(st) + (sign ? "\n" + sign : "");
+    const sign = String(getSignoff(st) || "").trim();
+    const text = trimEnd(String(getMessage(st) || "")) + (sign ? "\n" + sign : "");
     const fallback = () => {
-      try { fMessage.focus(); fMessage.select(); } catch (e) { /* ignore */ }
+      let ok = false;
+      try {
+        copyBox.value = text;
+        copyBox.focus({ preventScroll: true });
+        copyBox.select();
+        copyBox.setSelectionRange(0, text.length);
+        ok = !!(document.execCommand && document.execCommand("copy"));
+      } catch (e) { ok = false; }
+      if (ok) { popStatus.textContent = "Copied to clipboard."; try { fCopy.focus({ preventScroll: true }); } catch (e) { /* ignore */ } return; }
       const mac = /Mac|iPhone|iPad/.test(navigator.platform || "");
-      popStatus.textContent = `Message selected — press ${mac ? "⌘" : "Ctrl+"}C to copy.`;
+      popStatus.textContent = `Message and sign-off selected — press ${mac ? "⌘" : "Ctrl+"}C to copy.`;
     };
+    // a host frame that withholds clipboard-write makes the async API log a console error: go straight to
+    // the fallback there
+    let blocked = false;
+    try { const pp = document.permissionsPolicy || document.featurePolicy; blocked = !!(pp && pp.allowsFeature && !pp.allowsFeature("clipboard-write")); }
+    catch (e) { blocked = false; }
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
+      if (!blocked && navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(() => { popStatus.textContent = "Copied to clipboard."; }, fallback);
       } else fallback();
     } catch (e) { fallback(); }
@@ -887,16 +1163,37 @@
     const st = S[active];
     const coverChanged = getCover(st) !== st.card.coverText;
     st.edit = {};
-    try { delete store[st.card.id]; } catch (e) { /* ignore */ }
+    delete store[st.card.id];
+    dirtyIds.add(st.card.id);
     saveSoon();
     st.dom.msgText.textContent = getMessage(st);
     st.dom.msgSign.textContent = "";
     st.needFit = true;
     for (const k in st.faces) st.faces[k].key = "";
-    if (coverChanged) rerenderCover(st);
+    if (coverChanged) { clearTimeout(coverTimer); coverTimer = 0; coverPending = null; rerenderCover(st); }
     fillWriter();
     popStatus.textContent = "This card is back to its original words.";
     fReset.focus();
+  });
+
+  // another tab saved: pick up its edits for the cards this tab is not editing right now
+  window.addEventListener("storage", (e) => {
+    if (e.key !== STORE_KEY && e.key !== null) return;
+    const fresh = readStore();
+    if (!fresh) return;
+    S.forEach((st) => {
+      const id = st.card.id;
+      if (dirtyIds.has(id)) return;
+      if (st === S[active] && (!writer.hidden || document.activeElement === st.dom.msgText)) return;
+      const prevCover = getCover(st), prevFoil = getFoil(st);
+      st.edit = fresh[id] || {};
+      if (fresh[id]) store[id] = st.edit; else delete store[id];
+      st.dom.msgText.textContent = getMessage(st);
+      st.dom.msgSign.textContent = getSignoff(st);
+      st.needFit = true;
+      if (getFoil(st) !== prevFoil) for (const k in st.faces) st.faces[k].key = "";
+      if (getCover(st) !== prevCover) rerenderCover(st);
+    });
   });
 
   /* ================= keyboard ================= */
@@ -909,6 +1206,8 @@
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target;
     if (e.key === "Escape") {
+      // unwind one layer at a time: the reset confirm, then the panel, then the card
+      if (!writer.hidden && !popConfirm.hidden) { e.preventDefault(); hideConfirm(); fReset.focus(); return; }
       if (!writer.hidden) { e.preventDefault(); closeWriter(true); return; }
       if (isTyping(t)) { t.blur && t.blur(); return; }
       const st = S[active];
@@ -918,6 +1217,9 @@
     if (isTyping(t)) return;
     const inPanel = writer.contains(t);
     const onControl = t && t.closest && t.closest("button, a, [role='radio']");
+    // single-letter shortcuts only act while the toolbar has focus (WCAG 2.1.4), so stray keystrokes
+    // and speech input elsewhere can't trigger them
+    const inToolbar = !!(toolbar && t && toolbar.contains(t));
     switch (e.key) {
       case "ArrowRight":
         if (inPanel) return;
@@ -926,13 +1228,14 @@
         if (inPanel) return;
         e.preventDefault(); manual(); goTo(intended() - 1, -1); break;
       case " ": case "Enter":
-        if (onControl || inPanel) return;
+        // with the panel open, Space/Enter elsewhere must not close the card out from under it
+        if (onControl || inPanel || !writer.hidden) return;
         e.preventDefault(); manual(); toggleOpen(); break;
       case "w": case "W":
-        if (inPanel) return;
+        if (!inToolbar) return;
         e.preventDefault(); openWriter(); break;
       case "p": case "P":
-        if (inPanel) return;
+        if (!inToolbar) return;
         e.preventDefault(); setShow(!show.on); break;
       default: break;
     }
@@ -980,7 +1283,8 @@
     const f = st.faces[face];
     if (!f.ready) return;
     const ry = tilt.ry.x, rx = tilt.rx.x;
-    const key = `${ry.toFixed(2)}|${rx.toFixed(2)}|${view.gx.toFixed(1)}|${view.gy.toFixed(1)}|${foilName}|${view.bx.toFixed(1)}`;
+    // 0.1-degree steps: a settling spring stops forcing full-canvas repaints and uploads
+    const key = `${ry.toFixed(1)}|${rx.toFixed(1)}|${view.gx.toFixed(1)}|${view.gy.toFixed(1)}|${foilName}|${view.bx.toFixed(1)}`;
     if (key === f.key) return;
     f.key = key;
     const [ox, oy] = faceOrigin(st, face);
@@ -1010,12 +1314,13 @@
         }
         g.addColorStop(at(0.62), "hsla(0,0%,100%,0)");
       } else {
+        const pk = F.peak, sh = (0.58 * pk / 0.82).toFixed(3), lo = (0.24 * pk / 0.82).toFixed(3);
         g.addColorStop(at(-0.42), `rgba(${F.tint},0)`);
-        g.addColorStop(at(-0.18), `rgba(${F.tint},0.24)`);
-        g.addColorStop(at(-0.06), `rgba(${F.tint},0.58)`);
-        g.addColorStop(at(0), `rgba(${F.core},0.82)`);
-        g.addColorStop(at(0.06), `rgba(${F.tint},0.58)`);
-        g.addColorStop(at(0.18), `rgba(${F.tint},0.24)`);
+        g.addColorStop(at(-0.18), `rgba(${F.tint},${lo})`);
+        g.addColorStop(at(-0.06), `rgba(${F.tint},${sh})`);
+        g.addColorStop(at(0), `rgba(${F.core},${pk})`);
+        g.addColorStop(at(0.06), `rgba(${F.tint},${sh})`);
+        g.addColorStop(at(0.18), `rgba(${F.tint},${lo})`);
         g.addColorStop(at(0.42), `rgba(${F.tint},0)`);
       }
       c.fillStyle = g;
@@ -1092,26 +1397,38 @@
     const pvx = (bx0 + bx1) / 2, pvy = (by0 + by1) / 2;
     const lift = tilt.lift.x;
     let sc = lerp(1, st.sOpen, m) * (1 + 0.02 * lift);
-    let ccy = cy;
-    if (isActive && room.r.x > 0.001 && room.top > topPad + 40) {
-      const free = room.top - 12 - topPad;
-      const hNow = (by1 - by0) * u * sc;
-      const k = clamp(free / hNow, 0.42, 1);
-      const cyR = topPad - 8 + Math.max(free + 8, hNow * k) / 2;
-      sc *= lerp(1, k, room.r.x);
-      ccy = lerp(cy, Math.min(cy, cyR), room.r.x);
+    let ccy = cy, ccx = cx;
+    if (isActive && room.r.x > 0.001) {
+      if (room.docked && room.left > 0) {
+        // panel docked at the right: the card moves into the band left of it (and shrinks if it must)
+        const lo = 16 + (room.inL || 0);
+        const free = room.left - 12 - lo;
+        const wNow = (bx1 - bx0) * u * sc;
+        const k = clamp(free / wNow, 0.42, 1);
+        sc *= lerp(1, k, room.r.x);
+        ccx = lerp(cx, Math.min(cx, lo + free / 2), room.r.x);
+      } else if (room.top > topPad + 40) {
+        const free = room.top - 12 - topPad;
+        const hNow = (by1 - by0) * u * sc;
+        const k = clamp(free / hNow, 0.42, 1);
+        const cyR = topPad - 8 + Math.max(free + 8, hNow * k) / 2;
+        sc *= lerp(1, k, room.r.x);
+        ccy = lerp(cy, Math.min(cy, cyR), room.r.x);
+      }
     }
-    const slotT = `translate3d(${fmt(cx)}px,${fmt(ccy + p.ty)}px,0) rotateZ(${fmt(p.rz)}deg) rotateX(${fmt(p.rx)}deg)`;
+    const slotT = `translate3d(${fmt(ccx)}px,${fmt(ccy + p.ty)}px,0) rotateZ(${fmt(p.rz)}deg) rotateX(${fmt(p.rx)}deg)`;
     if (slotT !== st.last.slotT) { d.slot.style.transform = slotT; st.last.slotT = slotT; }
+    // compare the written strings, so the final step to fully opaque is never skipped
     const op = clamp(p.op * st.fade, 0, 1);
-    if (Math.abs(op - (st.last.op == null ? -1 : st.last.op)) > 0.002) { d.slot.style.opacity = op >= 0.999 ? "" : op.toFixed(3); st.last.op = op; }
+    const opS = op >= 0.999 ? "" : op.toFixed(3);
+    if (opS !== st.last.opS) { d.slot.style.opacity = opS; st.last.opS = opS; }
     const ry = tilt.ry.x, rx = tilt.rx.x, bob = tilt.bob || 0;
     const cardT = `translate3d(0,${fmt(bob)}px,${fmt(lift * 14)}px) rotateX(${fmt(rx)}deg) rotateY(${fmt(ry)}deg) scale(${sc.toFixed(4)}) translate(${fmt(-pvx * u)}px,${fmt(-pvy * u)}px)`;
     if (cardT !== st.last.cardT) { d.cardEl.style.transform = cardT; st.last.cardT = cardT; }
     // screen-space hit box (rotation ignored — fine for pointer hit testing)
     if (isActive) {
       const hx = (bx1 - bx0) / 2 * u * sc, hy = (by1 - by0) / 2 * u * sc;
-      st.box = { x0: cx - hx, x1: cx + hx, y0: ccy + p.ty + bob - hy, y1: ccy + p.ty + bob + hy };
+      st.box = { x0: ccx - hx, x1: ccx + hx, y0: ccy + p.ty + bob - hy, y1: ccy + p.ty + bob + hy };
     }
 
     // cover hinge: the opened cover overlaps the spine by a hair (it sits 1px above the page), so no seam of
@@ -1124,9 +1441,15 @@
     const cosA = Math.cos(rad);
     setBright(st.faces.front, 0.8 + 0.2 * Math.max(0, cosA));
     setBright(st.faces.back, 0.84 + 0.16 * Math.max(0, -cosA));
-    const lidO = q > 0 && q < 1 ? 0.16 * Math.sin(rad) : 0;
-    if (Math.abs(lidO - (st.last.lid || 0)) > 0.003 || (lidO === 0 && st.last.lid !== 0)) { d.lid.style.opacity = lidO.toFixed(3); st.last.lid = lidO; }
-    if (Math.abs(m - (st.last.spine == null ? -1 : st.last.spine)) > 0.003) { d.spine.style.opacity = m.toFixed(3); st.last.spine = m; }
+    // the message is shown as soon as the cover lifts (the swinging cover reveals and hides it); it only
+    // becomes editable once the card has settled open (setSettled)
+    const rev = q > 0.001;
+    if (rev !== st.last.rev) { d.slot.classList.toggle("is-revealed", rev); st.last.rev = rev; }
+    // the recording's insert keeps its brightness through the swing: only a whisper of shade
+    const lidS = (q > 0 && q < 1 ? 0.03 * Math.sin(rad) : 0).toFixed(3);
+    if (lidS !== st.last.lidS) { d.lid.style.opacity = lidS; st.last.lidS = lidS; }
+    const spS = m.toFixed(3);
+    if (spS !== st.last.spS) { d.spine.style.opacity = spS; st.last.spS = spS; }
 
     // shadows on the table, shifted opposite to the tilt. The page under the cover always rests on the table;
     // the cover adds its own shadow only where its projection falls left of the spine, and that shadow
@@ -1136,7 +1459,8 @@
     const ay = (0 - pvy) * u * sc;
     const sx0 = -proj * g.w, sw = (g.w - sx0) / g.w * sc;
     const ax = (sx0 - pvx) * u * sc, bx = (0 - pvx) * u * sc;
-    const ambT = `translate3d(${fmt(ax + offX * 1.4 - 4 * sw)}px,${fmt(ay + offY * 1.6 + 4)}px,0) scale(${(sw * 1.02).toFixed(4)},${(sc * 1.02).toFixed(4)})`;
+    // the ambient layer stays tucked under the card: a short, tight drop shadow as in the recording
+    const ambT = `translate3d(${fmt(ax + offX * 0.6)}px,${fmt(ay + offY * 0.5 + 3)}px,0) scale(${sw.toFixed(4)},${sc.toFixed(4)})`;
     // the contact shadow stays tucked under the paper (a hard band peeking out reads as a thick edge)
     const inset = 0.006 * g.w * u * sc;
     const conT = `translate3d(${fmt(bx + offX * 0.3 + inset + 1)}px,${fmt(ay + offY * 0.42 + 3)}px,0) scale(${(sc * 0.988).toFixed(4)},${(sc * 0.982).toFixed(4)})`;
@@ -1153,7 +1477,7 @@
     // foil sheen for the faces that can be seen
     if (st.ptw && st.ptw.kind === "exit") return;
     const vwU = bx1 - bx0, vhU = by1 - by0;
-    const tyN = ry / 13, txN = rx / 10;
+    const tyN = ry / TILT_Y, txN = rx / TILT_X;
     const L = vwU * Math.abs(D[0]) + vhU * Math.abs(D[1]);
     const off = 0.62 * L * (0.85 * tyN - 0.5 * txN);
     const view = {
@@ -1188,10 +1512,18 @@
     const pointerLive = tilt.mode !== "none" && (tilt.mode === "touch" || clock - tilt.lastMove < 2.5);
     const idleTarget = pointerLive ? 0 : 1;
     tilt.idle += (idleTarget - tilt.idle) * (1 - Math.exp(-dt / (idleTarget ? 1.1 : 0.25)));
-    const pRy = tilt.mode === "none" ? 0 : tilt.nx * 13;
-    const pRx = tilt.mode === "none" ? 0 : -tilt.ny * 10;
-    const fl = reduced ? 0 : 1;
-    const fRy = fl * 6 * Math.sin(0.5 * clock), fRx = fl * 4 * Math.sin(0.37 * clock + 1);
+    const pRy = tilt.mode === "none" ? 0 : tilt.nx * TILT_Y;
+    const pRx = tilt.mode === "none" ? 0 : -tilt.ny * TILT_X;
+    // idle float: rests after FLOAT_REST s without input or animation (fading out over ~1.5 s) and comes
+    // back on the next input, so an untouched page stops repainting its foil
+    const floatOn = clock - lastInput < FLOAT_REST;
+    if (reduced) tilt.fl = 0;
+    else {
+      tilt.fl += ((floatOn ? 1 : 0) - tilt.fl) * (1 - Math.exp(-dt / (floatOn ? 0.35 : 0.5)));
+      if (!floatOn && tilt.fl < 0.002) tilt.fl = 0;
+    }
+    const fl = tilt.fl;
+    const fRy = fl * TILT_Y * 0.46 * Math.sin(0.5 * clock), fRx = fl * TILT_X * 0.4 * Math.sin(0.37 * clock + 1);
     const w = tilt.idle;
     springStep(tilt.ry, amp * lerp(pRy, fRy, w), 7, dt);
     springStep(tilt.rx, amp * lerp(pRx, fRx, w), 7, dt);
@@ -1246,25 +1578,31 @@
   const gate = Promise.race([Promise.all(fontLoads), new Promise((r) => setTimeout(r, 650))]);
   gate.then(() => {
     const st = S[active];
-    ensureFace(st, "front");
-    showSlot(st);
-    st.dom.slot.style.zIndex = "2";
-    if (reduced) startPose(st, "fadeIn", Object.assign({}, REST, { op: 0 }), REST, 0.2, 0);
-    else startPose(st, "enter", enterPose(1), REST, 1.0, 0.05);
+    // if the user already switched (slow fonts), that card is on its way in: don't restart its entrance
+    if (!st.visible) {
+      ensureFace(st, "front");
+      showSlot(st);
+      st.dom.slot.style.zIndex = "3";
+      if (reduced) startPose(st, "fadeIn", Object.assign({}, REST, { op: 0 }), REST, 0.2, 0);
+      else startPose(st, "enter", enterPose(1), REST, 1.0, 0.05);
+      announce(`Card ${active + 1} of ${N}, ${st.card.title}`);
+    }
     show.mark = clock;
-    announce(`Card ${active + 1} of ${N}, ${st.card.title}`);
+    lastInput = clock;
     queueAll(active);
   });
   try {
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => {
         S.forEach((st) => { st.needFit = true; });
-        // repaint faces that were painted before the lettering fonts arrived
+        // repaint fronts whose lettering was painted before the fonts arrived. Only cover text is drawn
+        // with web fonts, and only on the front (the back silhouette and the inside never change with it).
         if (fontsOK()) {
           S.forEach((st) => {
-            if (st.fontsAtRender === false) {
+            if (st.fontsAtRender === false && st.card.coverText != null && st.faces.front.ready) {
               st.fontsAtRender = null;
-              for (const k in st.faces) if (st.faces[k].ready) { st.faces[k].dirty = true; enqueue(st, k, st === S[active]); }
+              st.faces.front.dirty = true;
+              enqueue(st, "front", st === S[active]);
             }
           });
         }

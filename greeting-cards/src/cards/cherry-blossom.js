@@ -46,9 +46,9 @@
      (one device pixel per tile pixel, so flecks stay ~1-2px at any scale) plus a few loose glints.
      Foil: a white stroke of the same band. Flecks come from the art-only texture stream. */
   const ROSE_GLITTER = {
-    base: "#BE1750",
-    flecks: [["#D92D68", 0.32], ["#EE5C8E", 0.18], ["#FFC2D4", 0.1], ["#9C0E3B", 0.26], ["#F67FA6", 0.08], ["#F3E4EA", 0.06]],
-    glint: "rgba(255,246,250,0.95)",
+    base: "#A8103E",
+    flecks: [["#C8174A", 0.34], ["#DA3A6A", 0.16], ["#F7B3C6", 0.06], ["#820A30", 0.28], ["#E8608C", 0.06], ["#E9EDF2", 0.1]],
+    glint: "rgba(250,252,255,1)",
   };
   function glitterPattern(ctx, S) {
     const pal = S.pal || ROSE_GLITTER;
@@ -531,11 +531,13 @@
   }
 
   /* ---------------- the red marker-painted panel ---------------- */
+  // the red panel sits on a white base card that shows as a rim along the right and bottom
+  const panelRect = (w, h) => ({ x0: 1.0, y0: 1.1, x1: w - w * 0.02, y1: h - h * 0.016 });
   function paintPanel(ctx, w, h, T, scale) {
     // white card base peeks out as a thin rim
     ctx.fillStyle = "#F6F4F2";
     ctx.fillRect(0, 0, w, h);
-    const x0 = 1.0, y0 = 1.1, x1 = w - 2.2, y1 = h - 2.4;
+    const { x0, y0, x1, y1 } = panelRect(w, h);
     ctx.save();
     ctx.shadowColor = "rgba(60,10,15,0.35)";
     ctx.shadowBlur = 2 * scale; ctx.shadowOffsetX = 0.6 * scale; ctx.shadowOffsetY = 0.8 * scale;
@@ -654,8 +656,9 @@
       if (!S.foil) {
         paintPanel(ctx, box.w, box.h, S.tex, S.scale);
         // painted stems stay on the panel
+        const pr = panelRect(box.w, box.h);
         ctx.save();
-        ctx.beginPath(); ctx.rect(0, 0, box.w, box.h); ctx.clip();
+        ctx.beginPath(); ctx.rect(pr.x0, pr.y0, pr.x1 - pr.x0, pr.y1 - pr.y0); ctx.clip();
         paintStem(ctx, scene.main, 8.4, S);
         paintStem(ctx, scene.branch, 7, S);
         paintStem(ctx, scene.budStemL, 5.4, S);
@@ -670,8 +673,8 @@
     drawBack(ctx, box, layer, opts) {
       const S = texState(box, layer, opts, "tex");
       S.pal = {
-        base: "#CF2A62",
-        flecks: [["#D93C74", 0.36], ["#F06B98", 0.24], ["#FFC2D4", 0.12], ["#B01A4C", 0.18], ["#FF8FB3", 0.1]],
+        base: "#B51C47",
+        flecks: [["#C4204A", 0.36], ["#D8456F", 0.2], ["#F4B0C2", 0.08], ["#8E1137", 0.26], ["#E2577F", 0.1]],
         glint: "rgba(255,248,250,0.95)",
       };
       const L = opts.rng("back"), w = box.w, h = box.h;

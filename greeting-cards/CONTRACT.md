@@ -77,11 +77,11 @@ The safe pattern (do this): take every *layout* decision (positions, sizes, rota
 
 ### Fonts
 
-Canvas text must name a real stack with fallbacks, e.g. `'500 15px "Josefin Sans", "Futura", "Century Gothic", sans-serif'`. The shell loads Google Fonts (`Caveat` for messages, `Josefin Sans` for cover lettering, `Instrument Sans` for UI) and re-renders all faces once `document.fonts.ready` resolves.
+Canvas text must name a real stack with fallbacks, e.g. `'500 15px "Josefin Sans", "Futura", "Century Gothic", sans-serif'`. The shell loads Google Fonts (`Caveat` for messages, `Josefin Sans` for cover lettering, `Instrument Sans` for UI). If the fonts arrive after the first paint, it re-renders the front of every card that declares `coverText` (the only canvas text) once `document.fonts.ready` resolves.
 
 ### Performance
 
-A face is rendered once (and again only when the user edits cover text), at up to ~2× device scale, and the card is about 300 units wide, so a face is ≈ 600×600 px. Keep one `renderFace` under ~150 ms: prefer `fillRect` flecks to thousands of path fills, bound glitter with `bounds`, and avoid per-pixel `getImageData` loops over the whole canvas.
+A face is rendered once (again only when the user edits cover text, or when a larger window needs a sharper copy), at up to 2.5× (3.5× for the card on show on large hi-DPI screens) device px per unit, and the card is about 300 units wide, so a face is ≈ 750–1050 px across. Keep one `renderFace` under ~150 ms: prefer `fillRect` flecks to thousands of path fills, bound glitter with `bounds`, and avoid per-pixel `getImageData` loops over the whole canvas.
 
 ## Checking your work
 

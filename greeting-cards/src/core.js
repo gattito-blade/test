@@ -92,6 +92,14 @@
         ctx.scale(-1, 1);
         ctx.drawImage(front, 0, 0);
         ctx.restore();
+        // keep only the solid die-cut shape: soft drop shadows painted on the front have partial alpha
+        // and would otherwise turn into a pale haze around the silhouette
+        const id = ctx.getImageData(0, 0, c.width, c.height), px = id.data;
+        for (let i = 3; i < px.length; i += 4) {
+          const a = px[i];
+          px[i] = a <= 110 ? 0 : a >= 200 ? 255 : ((a - 110) * 255) / 90;
+        }
+        ctx.putImageData(id, 0, 0);
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalCompositeOperation = "source-in";
@@ -104,6 +112,15 @@
         ctx.globalCompositeOperation = "source-atop";
         ctx.fillStyle = sh;
         ctx.fillRect(0, 0, c.width, c.height);
+        ctx.restore();
+        // die-cut overhangs are the backs of separate layers: a shade darker than the card stock
+        ctx.save();
+        ctx.globalCompositeOperation = "source-atop";
+        ctx.fillStyle = "rgba(70,60,50,0.12)";
+        ctx.beginPath();
+        ctx.rect(-g.pad.l, -g.pad.t, g.W, g.H);
+        ctx.rect(0, 0, g.w, g.h);
+        ctx.fill("evenodd");
         ctx.restore();
         K.paperGrain(ctx, -g.pad.l, -g.pad.t, g.W, g.H, K.rng(card.id + ":grain"), 0.05, "source-atop");
       }

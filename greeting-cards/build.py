@@ -32,7 +32,10 @@ def main():
             cards.append(f"/* ---- card: {cid} ---- */\n" + guard(f.read_text(encoding="utf-8"), f.name))
         else:
             print(f"warning: src/cards/{cid}.js missing — placeholder will be used")
-    js = "\n".join([guard(read("core.js"), "core.js"), *cards, guard(read("shell.js"), "shell.js")])
+    # one <script> per source: a card that throws (or fails to parse) only loses that card, which the
+    # shell then replaces with a placeholder, instead of aborting everything after it
+    chunks = [guard(read("core.js"), "core.js"), *cards, guard(read("shell.js"), "shell.js")]
+    scripts = "".join(f"<script>\n{c}\n</script>\n" for c in chunks)
     body = read("shell.html")
     css = read("shell.css")
     app = (
@@ -40,7 +43,7 @@ def main():
         '<link rel="preconnect" href="https://fonts.googleapis.com">\n'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n'
         f'<link rel="stylesheet" href="{FONTS}">\n'
-        f"<style>\n{css}\n</style>\n{body}\n<script>\n{js}\n</script>\n"
+        f"<style>\n{css}\n</style>\n{body}\n{scripts}"
     )
     (ROOT / "app.html").write_text(app, encoding="utf-8")
     index = (

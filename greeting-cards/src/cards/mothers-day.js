@@ -279,6 +279,7 @@
   function toothTile(scale) {
     const key = Math.round(scale * 1000);
     if (toothTiles[key]) return toothTiles[key];
+    for (const k in toothTiles) delete toothTiles[k]; // keep only the current scale
     const TU = 72; // tile size in card units
     const n = Math.max(16, Math.round(TU * scale));
     const r = K.rng("mothers-day:tooth");
@@ -677,7 +678,11 @@
   /* ------------------------------------------------------------------ */
   /* cover lettering                                                     */
   /* ------------------------------------------------------------------ */
-  const FONT = (s) => "500 " + s.toFixed(2) + 'px "Josefin Sans", "Futura", "Century Gothic", sans-serif';
+  const FONT = (s) => "600 " + s.toFixed(2) + 'px "Josefin Sans", "Futura", "Century Gothic", sans-serif';
+  // user-perceived characters: emoji ZWJ sequences, skin tones and flags stay whole when spaced out
+  const SEG = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+  const graphemes = (s) => (SEG ? Array.from(SEG.segment(s), (x) => x.segment) : Array.from(s));
+  const MIN_SIZE = 7; // card units: smaller lettering is unreadable, so overlong lines are cut with an ellipsis
   function coverLines(text) {
     let lines = String(text == null ? "" : text).toUpperCase().replace(/'/g, "’").split(/\r?\n/).map((s) => s.trim());
     while (lines.length && !lines[0]) lines.shift();
@@ -702,7 +707,7 @@
       ctx.font = FONT(sz);
       const sp = 0.18 * sz;
       return lines.map((ln) => {
-        const ch = Array.from(ln), ws = ch.map((c) => ctx.measureText(c).width);
+        const ch = graphemes(ln), ws = ch.map((c) => ctx.measureText(c).width);
         const tot = ws.reduce((a, b) => a + b, 0) + sp * Math.max(0, ch.length - 1);
         return { ch, ws, tot, sp };
       });
@@ -725,9 +730,23 @@
     const maxW = Math.max(1, ...m.map((x) => x.tot));
     if (maxW > box.w * 0.8) {
       const f = (box.w * 0.8) / maxW;
-      size *= f;
+      size = Math.max(MIN_SIZE, size * f);
       pitch *= Math.max(0.8, f);
       m = measure(size);
+      // still too wide at the smallest legible size: cut the line and end it with an ellipsis
+      const lim = box.w * 0.86;
+      m.forEach((ln) => {
+        if (ln.tot <= lim) return;
+        ctx.save();
+        ctx.font = FONT(size);
+        const ell = ctx.measureText("…").width;
+        ctx.restore();
+        while (ln.ch.length > 1 && ln.tot + ln.sp + ell > lim) {
+          ln.tot -= ln.ws.pop() + ln.sp;
+          ln.ch.pop();
+        }
+        ln.ch.push("…"); ln.ws.push(ell); ln.tot += ln.sp + ell;
+      });
     }
     ctx.font = FONT(size);
     const hm = ctx.measureText("H");
@@ -774,10 +793,10 @@
       if (!gl.length) continue;
       const base = gl[0].y;
       const gr = g.createLinearGradient(0, base - lay.cap, 0, base);
-      gr.addColorStop(0, "#D8BB6C");
-      gr.addColorStop(0.4, "#C09844");
-      gr.addColorStop(0.62, "#AC8331");
-      gr.addColorStop(1, "#866322");
+      gr.addColorStop(0, "#A3895A");
+      gr.addColorStop(0.4, "#8E7442");
+      gr.addColorStop(0.62, "#7F6739");
+      gr.addColorStop(1, "#66512C");
       g.fillStyle = gr;
       g.font = lay.font;
       g.textBaseline = "alphabetic";
@@ -787,13 +806,13 @@
     // a broad, soft light band across the foil
     const band = g.createLinearGradient(box.w * 0.15, y0, box.w * 0.85, y1);
     band.addColorStop(0, "rgba(255,240,200,0)");
-    band.addColorStop(0.45, "rgba(255,240,200,0.26)");
-    band.addColorStop(0.55, "rgba(255,240,200,0.26)");
+    band.addColorStop(0.45, "rgba(255,240,200,0.12)");
+    band.addColorStop(0.55, "rgba(255,240,200,0.12)");
     band.addColorStop(1, "rgba(255,240,200,0)");
     g.fillStyle = band;
     g.fillRect(0, y0, box.w, y1 - y0);
     // fine glitter / foil grain
-    const cols = ["rgba(255,246,210,0.85)", "rgba(110,80,24,0.5)", "rgba(240,212,130,0.75)", "rgba(150,112,40,0.55)", "rgba(255,252,236,0.95)"];
+    const cols = ["rgba(230,212,166,0.6)", "rgba(80,60,24,0.5)", "rgba(196,168,104,0.55)", "rgba(112,88,44,0.55)", "rgba(246,236,206,0.7)"];
     const x0 = box.w * 0.08, xw = box.w * 0.84, n = Math.round(xw * (y1 - y0) * 1.1);
     for (let i = 0; i < n; i++) {
       const z = 0.25 + T() * 0.4;
@@ -898,7 +917,7 @@
   K.registerCard({
     id: "mothers-day",
     title: "Mother's Day lily",
-    size: { w: 220, h: 300 },
+    size: { w: 205, h: 300 },
     paper: "#E6E4E0",
     insert: "#FBF8F2",
     ink: "#2B2722",
@@ -908,7 +927,7 @@
 
     drawCover(ctx, box, layer, opts) {
       const scale = opts.scale;
-      const M = makeMap(0.31, box.w / 2, 8, false);
+      const M = makeMap(0.3, box.w / 2, 9, false);
       const F = buildFlower(M, opts.rng("layout"));
       F.scale = scale;
       if (layer === "foil") {
