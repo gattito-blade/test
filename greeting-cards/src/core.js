@@ -55,6 +55,10 @@
   };
 
   /* ---------- face rendering ---------- */
+  // The back of the cover is a silhouette of the front art. The front is almost always painted just before
+  // the back (same card, scale and text), so the last front painting is remembered and reused rather than
+  // painted a second time. Internal only: callers see the same API and the same pixels.
+  let lastFront = null;
   // layer: "art" (full colour) or "foil" (opaque white wherever foil/glitter lives; alpha = mask strength)
   // opts: { text } — the card's (possibly user-edited) coverText
   K.renderFace = function (card, face, layer, scale, opts) {
@@ -74,10 +78,14 @@
     ctx.setTransform(scale, 0, 0, scale, g.pad.l * scale, g.pad.t * scale);
     if (face === "front") {
       card.drawCover(ctx, box, layer, o);
+      if (layer === "art") lastFront = { card, scale, text: o.text, canvas: c };
     } else if (face === "back") {
       if (layer === "art") {
         // silhouette of the cover, mirrored, in the card stock colour
-        const front = K.renderFace(card, "front", "art", scale, opts);
+        const lf = lastFront;
+        const front = lf && lf.card === card && lf.scale === scale && lf.text === o.text
+          ? lf.canvas
+          : K.renderFace(card, "front", "art", scale, opts);
         ctx.save();
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.translate(c.width, 0);
