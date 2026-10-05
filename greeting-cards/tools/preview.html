@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keepsake card preview</title>
+<style>
+  body{margin:0;padding:24px;background:#E7E5E1;font:12px/1.4 ui-monospace,Menlo,monospace;color:#333}
+  .row{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+  figure{margin:0;display:flex;flex-direction:column;gap:6px}
+  figure canvas{display:block;background:repeating-conic-gradient(#d9d6d1 0 25%,#e7e5e1 0 50%) 0 0/16px 16px;box-shadow:0 1px 3px rgba(0,0,0,.15)}
+  #err{color:#b00;white-space:pre-wrap;font-weight:bold}
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div class="row" id="row"></div>
+<pre id="timing"></pre>
+<script src="../src/core.js"></script>
+<script>
+(function(){
+  const q = new URLSearchParams(location.search), id = q.get('card'), scale = +(q.get('scale') || 2);
+  window.addEventListener('error', e => { document.getElementById('err').textContent += (e.message || e) + '\n'; });
+  const s = document.createElement('script');
+  s.src = '../src/cards/' + id + '.js';
+  s.onerror = () => { document.getElementById('err').textContent = 'Could not load src/cards/' + id + '.js'; window.__done = true; };
+  s.onload = () => {
+    try {
+      const K = window.KEEPSAKE, card = K.cards[id];
+      if (!card) throw new Error('No card registered with id "' + id + '"');
+      const t = [], row = document.getElementById('row');
+      const time = (label, fn) => { const a = performance.now(); const c = fn(); t.push(label + ': ' + (performance.now() - a).toFixed(1) + ' ms'); return c; };
+      const fig = (label, canvas) => { const f = document.createElement('figure'); const cap = document.createElement('figcaption'); cap.textContent = label; f.append(cap, canvas); row.append(f); canvas.style.width = (canvas.width / scale) + 'px'; };
+      const frontArt = time('front art', () => K.renderFace(card, 'front', 'art', scale));
+      const frontFoil = time('front foil', () => K.renderFace(card, 'front', 'foil', scale));
+      // sheen preview: diagonal light band through the foil mask
+      const sheen = document.createElement('canvas'); sheen.width = frontArt.width; sheen.height = frontArt.height;
+      const sc = sheen.getContext('2d'); sc.drawImage(frontArt, 0, 0);
+      const ov = document.createElement('canvas'); ov.width = sheen.width; ov.height = sheen.height; const oc = ov.getContext('2d');
+      const tint = { gold: ['rgba(255,236,170,0)', 'rgba(255,246,210,0.95)'], silver: ['rgba(235,240,255,0)', 'rgba(255,255,255,0.95)'], rose: ['rgba(255,200,220,0)', 'rgba(255,235,245,0.95)'], holo: ['rgba(180,220,255,0)', 'rgba(255,240,255,0.95)'] }[card.foil] || ['rgba(255,255,255,0)', 'rgba(255,255,255,.9)'];
+      const gr = oc.createLinearGradient(0, 0, ov.width, ov.height);
+      gr.addColorStop(0.30, tint[0]); gr.addColorStop(0.42, tint[1]); gr.addColorStop(0.54, tint[0]);
+      oc.fillStyle = gr; oc.fillRect(0, 0, ov.width, ov.height);
+      oc.globalCompositeOperation = 'destination-in'; oc.drawImage(frontFoil, 0, 0);
+      sc.globalCompositeOperation = 'screen'; sc.drawImage(ov, 0, 0);
+      const backArt = time('back art', () => K.renderFace(card, 'back', 'art', scale));
+      const backFoil = time('back foil', () => K.renderFace(card, 'back', 'foil', scale));
+      const insideArt = time('inside art', () => K.renderFace(card, 'inside', 'art', scale));
+      const insideFoil = time('inside foil', () => K.renderFace(card, 'inside', 'foil', scale));
+      // stand-in message so layout can be judged
+      const ic = insideArt.getContext('2d'); const m = K.messageRect(card);
+      ic.save(); ic.setTransform(scale, 0, 0, scale, 0, 0);
+      ic.strokeStyle = 'rgba(0,120,255,.35)'; ic.setLineDash([3, 3]); ic.strokeRect(m.x, m.y, m.w, m.h);
+      const lines = (card.message || '').split('\n'); const fs = card.messageSize || card.size.w * 0.085;
+      ic.fillStyle = card.ink; ic.textAlign = 'center'; ic.textBaseline = 'middle'; ic.font = 'italic ' + fs + 'px "Caveat", "Comic Sans MS", cursive';
+      lines.forEach((l, i) => ic.fillText(l, m.x + m.w / 2, m.y + m.h / 2 + (i - (lines.length - 1) / 2) * fs * 1.25));
+      ic.restore();
+      const g = K.faceGeom(card, 'front');
+      fig('front art (' + g.W.toFixed(0) + '×' + g.H.toFixed(0) + ' units)', frontArt);
+      fig('front foil mask', frontFoil);
+      fig('front + sheen preview', sheen);
+      fig('back of cover (inside-left)', backArt);
+      fig('back foil mask', backFoil);
+      fig('inside-right (+ stand-in message)', insideArt);
+      fig('inside foil mask', insideFoil);
+      document.getElementById('timing').textContent = t.join('\n');
+    } catch (e) { document.getElementById('err').textContent = String(e && e.stack || e); }
+    window.__done = true;
+  };
+  document.body.append(s);
+})();
+</script>
+</body>
+</html>
