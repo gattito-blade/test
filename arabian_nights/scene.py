@@ -15,7 +15,7 @@ args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv els
 random.seed(7)
 bpy.ops.wm.read_factory_settings(use_empty=True)
 scene = bpy.context.scene
-FPS, N = 24, 240
+FPS, N = 24, globals().get("N_FRAMES", 240)
 scene.render.fps = FPS
 scene.frame_start, scene.frame_end = 1, N
 
@@ -367,6 +367,7 @@ path = [
     (240, (34, 4, 15),   (-0.06, -0.12, 0.40)),
 ]
 for f, loc, rot in path:
+    f = int(round(1 + (f - 1) * (N - 1) / 239))
     carpet.location = loc; carpet.rotation_euler = rot
     carpet.keyframe_insert("location", frame=f); carpet.keyframe_insert("rotation_euler", frame=f)
 # gentle bob
@@ -474,4 +475,5 @@ except Exception as ex:
     print("compositor skipped:", ex)
 
 scene.frame_start, scene.frame_end = args.frames
-bpy.ops.render.render(animation=True)
+if not globals().get("FILM"):
+    bpy.ops.render.render(animation=True)
