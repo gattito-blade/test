@@ -20,6 +20,7 @@ built by Python scripts that drive Blender. There are no downloaded 3D models.
 | `make_audio.py` | Creates the genie's voice (text-to-speech), the background music and `lipsync.json` (how far the mouth opens on each frame). |
 | `soundtrack.wav`, `lipsync.json` | Ready-made outputs of `make_audio.py`. You can skip step 3 below if you keep the same dialogue. |
 | `genie_arabian_nights.mp4` | The final video. |
+| `arabian_nights.blend` | The complete scene, ready to open in Blender (double-click it). Press **Space** to play. |
 
 ---
 
@@ -142,6 +143,8 @@ ffmpeg -y -framerate 24 -i frames/%04d.png -i soundtrack.wav -vf "scale=1920:108
 ```
 
 ### Open it in Blender's window to explore / tweak
+
+**Easiest:** just double-click `arabian_nights.blend` (included). To regenerate it after editing the scripts:
 
 To browse the scene in the normal Blender interface instead of only rendering:
 
