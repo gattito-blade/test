@@ -2,13 +2,15 @@
 
 Run:  python scene.py [--frames START END] [--samples N] [--out DIR]
 """
-import bpy, bmesh, math, random, sys, argparse
+import bpy, bmesh, math, random, sys, os, argparse
 from mathutils import Vector
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--frames", nargs=2, type=int, default=[1, 240])
 ap.add_argument("--samples", type=int, default=48)
-ap.add_argument("--out", default="/home/user/test/arabian_nights/frames/")
+_HERE = os.path.dirname(os.path.abspath(globals().get("__file__") or "."))
+ap.add_argument("--out", default=os.path.join(_HERE, "frames", ""))
+ap.add_argument("--gpu", action="store_true", help="render on the graphics card (NVIDIA/AMD/Intel/Apple)")
 ap.add_argument("--res", type=int, default=100)
 args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 
@@ -436,6 +438,22 @@ for ob in bpy.data.objects:
 r = scene.render
 r.engine = "CYCLES"
 scene.cycles.device = "CPU"
+if args.gpu:
+    prefs = bpy.context.preferences.addons["cycles"].preferences
+    for backend in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):
+        try:
+            prefs.compute_device_type = backend
+            prefs.get_devices()
+            gpus = [d for d in prefs.devices if d.type != "CPU"]
+            if gpus:
+                for d in prefs.devices: d.use = True
+                scene.cycles.device = "GPU"
+                print("Rendering on GPU via", backend, [d.name for d in gpus])
+                break
+        except Exception:
+            pass
+    else:
+        print("No supported GPU found - rendering on CPU")
 scene.cycles.samples = args.samples
 scene.cycles.use_adaptive_sampling = True
 scene.cycles.adaptive_threshold = 0.03
